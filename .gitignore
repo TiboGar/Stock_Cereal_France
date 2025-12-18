@@ -205,3 +205,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+extracted_data/SCR-GRC-histDEP_collecte_stock_depuis_2000-C25.csv
+dataset.zip
