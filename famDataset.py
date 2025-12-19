@@ -206,21 +206,23 @@ class famDataset:
         # --------------------------------------- #
         
         if(convert_attributes):
-            # ENTREE = TOTAL_COLLECTE + ENTREE_DEPOT
-            df['ENTREE'] = df['TOTAL_COLLECTE']+ df['ENTREE_DEPOT']
+            # farmers_entry = TOTAL_COLLECTE + ENTREE_DEPOT
+            df['farmers_entry'] = df['TOTAL_COLLECTE']+ df['ENTREE_DEPOT']
 
             # compute Var(STOCKS) the first lag difference of the STOCKS column for each combination of ESPECES and DEP
             df['LAG_DIFF'] = df.groupby(['ESPECES', 'DEP'])['STOCKS'].transform(lambda x: x - x.shift(1)).round(3).fillna(0)
 
-            # SORTIE = Var(STOCKS) - TOTAL_COLLECTE - SORTIE_DEPOT - REPRISE_DEPOT
-            df['SORTIE'] = df['LAG_DIFF'] - df['TOTAL_COLLECTE'] - df['SORTIE_DEPOT'] - df['REPRISE_DEPOT']
+            # movement = Var(STOCKS) - TOTAL_COLLECTE - SORTIE_DEPOT - REPRISE_DEPOT
+            df['movement'] = df['LAG_DIFF'] - df['TOTAL_COLLECTE'] - df['SORTIE_DEPOT'] - df['REPRISE_DEPOT']
 
             # Due to precision issues, there are some number 10 zeros after the . I delete them
-            df[['ENTREE','SORTIE','LAG_DIFF']] = df[['ENTREE','SORTIE','LAG_DIFF']].round(3)
-
+            df[['farmers_entry','movement','LAG_DIFF']] = df[['farmers_entry','movement','LAG_DIFF']].round(3)
+            
+            df['stocks'] = df['STOCKS'] + df['STOCKS_DEPOTS']
+            
             # drop previous attributes
             if(drop_attributes):
-                df.drop(['TOTAL_COLLECTE', 'STOCKS', 'STOCKS_DEPOTS', 'ENTREE_DEPOT',
+                df.drop(['CAMPAGNE', 'TOTAL_COLLECTE', 'STOCKS', 'STOCKS_DEPOTS', 'ENTREE_DEPOT',
                         'SORTIE_DEPOT', 'REPRISE_DEPOT', 'LAG_DIFF'], axis = 1, inplace=True)
             
 
