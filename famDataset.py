@@ -9,6 +9,9 @@ import geopandas as gpd
 import numpy as np
 import warnings
 
+# sktime
+from sktime.datatypes import check_raise, convert_to
+
 class famDataset:
     def __init__(self, root_dir: str):
         """
@@ -113,7 +116,7 @@ class famDataset:
         france.drop(['nom','nuts3','wikipedia'], axis = 1, inplace=True)
 
         # reduce geometry complexity to reduce plot time
-        france.geometry = france.geometry.simplify(tolerance= 0.05)
+        #france.geometry = france.geometry.simplify(tolerance= 0.05)
 
         self.geom_data = france
 
@@ -187,42 +190,69 @@ class famDataset:
         
         UT_dup = df.duplicated().sum() == 0
 
-        # Corrected by Error 4 
-        ## Error 3 - Spurious null STOCKS are observed
-        # A detection and inference function is set, see below the class
-        # detection boolean: STOCKS == 0 and prev_ > 100 and next_ > 100
-        # Inference is realised with mean of previous and next stock. 
-
-        #df[['DETECT','INFER']] = detect_and_infer(df)
-        
-        # Replace outlier stocks 
-        #df.loc[df['DETECT'],'STOCKS'] = df.loc[df['DETECT'],'INFER'] 
-
         ## drop not used columns 
         df.drop(['REGION','Unnamed: 13','DEPARTEMENT','ANNEE','MOIS','TRUE_ANNEE','CAMPAGNE_NUM'],axis=1, inplace=True)
+
+        # --------------------------------------- #
+        ### Fill Null  ###
+        # --------------------------------------- #
+        # For each unique combination of 'ESPECES','DEP','DATE' there is not always a value, set it at 0 in that case. 
+        # This create ~ 100K rows, not memory efficient but necessary to compute the lag of stock.
+
+        # create all combinations
+        especes = df['ESPECES'].unique()
+        deps = df['DEP'].unique()
+        dates = df['DATE'].unique()
+
+        all_idx = pd.MultiIndex.from_product([especes, deps, dates],
+                                            names=['ESPECES','DEP','DATE'])
+
+        # reindex and fill missing STOCKS with 0
+        df = (df.set_index(['ESPECES','DEP','DATE'])
+                    .reindex(all_idx)
+                    .reset_index())
+
+        df = df.fillna(0)
 
         # --------------------------------------- #
         ### attributes conversion ###
         # --------------------------------------- #
         
         if(convert_attributes):
-            # farmers_entry = TOTAL_COLLECTE + ENTREE_DEPOT
-            df['farmers_entry'] = df['TOTAL_COLLECTE']+ df['ENTREE_DEPOT']
+            # --------------------------------------- #
+            # For DEPOT: correct negative entries and positive exit
+            
+            # positive part of exits (>=0) goes to entries
+            pos_sortie = df['SORTIE_DEPOT'].clip(lower=0)
+            # negative part of entries (<=0) goes to exits
+            neg_entree = df['ENTREE_DEPOT'].clip(upper=0)
+
+            df['ENTREE_DEPOT'] = (df['ENTREE_DEPOT'] + pos_sortie).clip(lower=0)
+            df['SORTIE_DEPOT'] = (df['SORTIE_DEPOT'] + neg_entree).clip(upper=0)
+
+
+            # For Collecte: correct negative entries by setting them to a new columns
+            df['CORRECT_COLLECTE'] = df['TOTAL_COLLECTE'].clip(upper = 0)
+            df['TOTAL_COLLECTE'] = df['TOTAL_COLLECTE'].clip(lower = 0)
+
+            # --------------------------------------- #
+            # Create ENTREE and SORTIE
+
+            # ENTREE = TOTAL_COLLECTE + ENTREE_DEPOT
+            df['ENTREE'] = df['TOTAL_COLLECTE']+df['CORRECT_COLLECTE']+ df['ENTREE_DEPOT']
 
             # compute Var(STOCKS) the first lag difference of the STOCKS column for each combination of ESPECES and DEP
             df['LAG_DIFF'] = df.groupby(['ESPECES', 'DEP'])['STOCKS'].transform(lambda x: x - x.shift(1)).round(3).fillna(0)
 
-            # movement = Var(STOCKS) - TOTAL_COLLECTE - SORTIE_DEPOT - REPRISE_DEPOT
-            df['movement'] = df['LAG_DIFF'] - df['TOTAL_COLLECTE'] - df['SORTIE_DEPOT'] - df['REPRISE_DEPOT']
+            # SORTIE = Var(STOCKS) - TOTAL_COLLECTE - SORTIE_DEPOT - REPRISE_DEPOT
+            df['SORTIE'] = df['LAG_DIFF'] - df['TOTAL_COLLECTE'] - df['SORTIE_DEPOT'] - df['REPRISE_DEPOT']
 
             # Due to precision issues, there are some number 10 zeros after the . I delete them
-            df[['farmers_entry','movement','LAG_DIFF']] = df[['farmers_entry','movement','LAG_DIFF']].round(3)
-            
-            df['stocks'] = df['STOCKS'] + df['STOCKS_DEPOTS']
-            
+            df[['ENTREE','SORTIE','LAG_DIFF']] = df[['ENTREE','SORTIE','LAG_DIFF']].round(3)
+
             # drop previous attributes
             if(drop_attributes):
-                df.drop(['CAMPAGNE', 'TOTAL_COLLECTE', 'STOCKS', 'STOCKS_DEPOTS', 'ENTREE_DEPOT',
+                df.drop(['TOTAL_COLLECTE','CORRECT_COLLECTE', 'STOCKS', 'STOCKS_DEPOTS', 'ENTREE_DEPOT',
                         'SORTIE_DEPOT', 'REPRISE_DEPOT', 'LAG_DIFF'], axis = 1, inplace=True)
             
 
@@ -299,3 +329,39 @@ def detect_and_infer(df):
         'detect': detect.astype(bool).values,
         'infer': infer
     }, index=df.index)
+
+def make_sktime_multiindex(transformed_data,especes,variable):
+    """
+    Change transformed_data to a sktime compatible multiIndex Dataframe
+    ESPECES and ATTRIBUTES must be selected by user
+    Date before August 2000 are deleted.
+    
+    Returns:
+    - ts_df
+    """    
+
+    if(not especes in transformed_data['ESPECES'].unique()):        
+        print('Available values :',transformed_data['ESPECES'].unique())
+        raise ValueError("Error: especes is not found.")
+        
+    if(not variable in transformed_data.select_dtypes('float').columns):        
+        print('Available values :',transformed_data.select_dtypes('float').columns)
+        raise ValueError("Error: variable is not found.")
+        
+    df = transformed_data.loc[transformed_data['ESPECES'] == especes,['DEP', 'DATE', variable]]
+    
+    # Make a multiindex
+    ts_df = (
+        transformed_data[transformed_data['ESPECES'] == especes]
+        .set_index(["DEP", "DATE"])
+        .sort_index()
+        [["SORTIE"]] # variable
+    )
+
+    #  delete first values -> SORTIES is build on Stocks lag which is NA on first value leading to abnormal first observation 
+    ts_df[ts_df.index.get_level_values("DATE") > '2000-08-01']
+
+    # verify 
+    check_raise(ts_df, "pd-multiindex")
+
+    return(ts_df)
